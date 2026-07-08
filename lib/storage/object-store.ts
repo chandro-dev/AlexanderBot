@@ -1,4 +1,4 @@
-import { put, head, BlobNotFoundError } from "@vercel/blob";
+import { put, get } from "@vercel/blob";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -23,15 +23,19 @@ export function storageMode() {
 
 export async function readObject(pathname: string): Promise<Buffer | null> {
   if (useBlobStore()) {
-    try {
-      const metadata = await head(pathname);
-      const response = await fetch(metadata.url, { cache: "no-store" });
-      if (!response.ok) throw new Error(`Blob read failed: ${response.status}`);
-      return Buffer.from(await response.arrayBuffer());
-    } catch (error) {
-      if (error instanceof BlobNotFoundError) return null;
-      return null;
+    const blob = await get(pathname, { access: "private", useCache: false });
+    if (!blob || blob.statusCode === 304 || !blob.stream) return null;
+
+    const reader = blob.stream.getReader();
+    const chunks: Uint8Array[] = [];
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
     }
+
+    return Buffer.concat(chunks);
   }
 
   try {
@@ -44,7 +48,7 @@ export async function readObject(pathname: string): Promise<Buffer | null> {
 export async function writeObject(pathname: string, body: Buffer | string, contentType: string) {
   if (useBlobStore()) {
     await put(pathname, body, {
-      access: "public",
+      access: "private",
       contentType,
       addRandomSuffix: false,
       allowOverwrite: true,
