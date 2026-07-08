@@ -1,5 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import { z } from "zod";
+import { categoriesForPrompt, expenseCategories, incomeCategories } from "@/lib/domain/categories";
 import { transactionInputSchema, type TransactionInput } from "@/lib/domain/transaction";
 
 const botUnderstandingSchema = z.object({
@@ -13,6 +14,38 @@ const botUnderstandingSchema = z.object({
 });
 
 export type BotUnderstanding = z.infer<typeof botUnderstandingSchema>;
+
+const expenseWords = [
+  "gaste",
+  "gastar",
+  "gasto",
+  "pague",
+  "pagar",
+  "pago",
+  "compre",
+  "comprar",
+  "compra",
+  "me costo",
+  "costó",
+  "salio",
+  "salió",
+];
+
+const incomeWords = [
+  "recibi",
+  "recibir",
+  "recibo",
+  "me pagaron",
+  "me pago",
+  "me pagó",
+  "ingreso",
+  "entraron",
+  "cobre",
+  "cobré",
+  "salario",
+  "nomina",
+  "nómina",
+];
 
 function getClient() {
   const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
@@ -29,6 +62,8 @@ function extractJson(text: string) {
 }
 
 export async function understandMessageFromText(message: string): Promise<BotUnderstanding> {
+  const ruleBased = understandTransactionWithRules(message);
+  if (ruleBased) return ruleBased;
   return understandMessage([{ text: message }], message);
 }
 
@@ -51,6 +86,7 @@ async function understandMessage(parts: unknown[], rawMessage: string): Promise<
   const today = new Date().toISOString().slice(0, 10);
   const currency = process.env.DEFAULT_CURRENCY || "COP";
   const model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+  const categories = categoriesForPrompt();
 
   const contents = [
     {
@@ -90,15 +126,19 @@ Reglas:
 - Usa intent="unknown" si no entiendes la intencion.
 - Para greeting, help, summary y recent no incluyas transaction; clear puede ser true.
 - Para add_transaction, si falta monto, tipo de movimiento o descripcion util, usa clear=false.
-- Si el usuario dice "gaste", "pague", "compre" o similar, es expense.
-- Si dice "me pagaron", "recibi", "ingreso", "salario" o similar, es income.
+- Si el usuario dice "gaste", "gasté", "pague", "pagué", "compre", "compré", "me costo", "me costó", "salio" o similar, es expense.
+- Si dice "me pagaron", "me pago", "me pagó", "recibi", "recibí", "ingreso", "entraron", "cobre", "cobré", "salario", "nomina" o similar, es income.
 - Si dice "transferi", "pase plata", "mande a otra cuenta" o similar, es transfer.
 - Si no hay moneda explicita, usa ${currency}.
+- Usa preferiblemente una de estas categorias:
+${categories}
 - No inventes datos criticos; pide aclaracion con reason.
 - confidence debe estar entre 0 y 1.
 - Escribe respuestas en espanol natural y corto.
 - Ejemplo saludo: {"intent":"greeting","clear":true,"reply":"Hola. Puedo registrar gastos e ingresos por texto o audio. Tambien puedo mostrar resumen y ultimos movimientos.","summary":"","limit":5}
 - Ejemplo ayuda: {"intent":"help","clear":true,"reply":"Puedes decir: gaste 25000 en almuerzo, recibi 100000 de salario, resumen, ultimos 5 movimientos.","summary":"","limit":5}
+- Ejemplo gasto: {"intent":"add_transaction","clear":true,"reply":"","summary":"Voy a registrar un gasto de 25000 ${currency} en Alimentacion por almuerzo.","limit":5,"transaction":{"date":"${today}","kind":"expense","amount":25000,"currency":"${currency}","category":"Alimentacion","description":"almuerzo","source":"telegram","transcript":"gaste 25000 en almuerzo","confidence":0.92}}
+- Ejemplo ingreso: {"intent":"add_transaction","clear":true,"reply":"","summary":"Voy a registrar un ingreso de 100000 ${currency} en Salario.","limit":5,"transaction":{"date":"${today}","kind":"income","amount":100000,"currency":"${currency}","category":"Salario","description":"salario","source":"telegram","transcript":"recibi 100000 de salario","confidence":0.92}}
 ${rawMessage ? `Texto recibido: ${rawMessage}` : "Interpreta el audio adjunto."}`,
         },
         ...parts,
@@ -140,4 +180,106 @@ ${rawMessage ? `Texto recibido: ${rawMessage}` : "Interpreta el audio adjunto."}
       transcript: parsed.transaction.transcript || rawMessage,
     } satisfies TransactionInput,
   });
+}
+
+function normalizeText(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function understandTransactionWithRules(message: string): BotUnderstanding | null {
+  const normalized = normalizeText(message);
+  const kind = isIncomeText(normalized) ? "income" : isExpenseText(normalized) ? "expense" : null;
+  if (!kind) return null;
+
+  const amount = extractAmount(normalized);
+  if (!amount) {
+    return {
+      intent: "add_transaction",
+      clear: false,
+      reason: "Identifique el tipo de movimiento, pero falta el monto.",
+      reply: "",
+      summary: "",
+      limit: 5,
+    };
+  }
+
+  const currency = process.env.DEFAULT_CURRENCY || "COP";
+  const description = extractDescription(normalized) || (kind === "expense" ? "gasto" : "ingreso");
+  const category = guessCategory(kind, normalized);
+  const date = new Date().toISOString().slice(0, 10);
+
+  return botUnderstandingSchema.parse({
+    intent: "add_transaction",
+    clear: true,
+    reason: "",
+    reply: "",
+    summary:
+      kind === "expense"
+        ? `Voy a registrar un gasto de ${amount} ${currency} en ${category} por ${description}.`
+        : `Voy a registrar un ingreso de ${amount} ${currency} en ${category} por ${description}.`,
+    limit: 5,
+    transaction: {
+      date,
+      kind,
+      amount,
+      currency,
+      category,
+      description,
+      source: "telegram",
+      transcript: message,
+      confidence: 0.9,
+    },
+  });
+}
+
+function includesAny(text: string, words: string[]) {
+  return words.some((word) => text.includes(normalizeText(word)));
+}
+
+function isExpenseText(text: string) {
+  return includesAny(text, expenseWords) || /\b(gast|pag|compr|cost|sali)/.test(text);
+}
+
+function isIncomeText(text: string) {
+  return includesAny(text, incomeWords) || /\b(recib|ingres|cobr|salari|nomin|pagaron)/.test(text);
+}
+
+function extractAmount(text: string) {
+  const match = text.match(/(?:cop|pesos|\$)?\s*(\d{1,3}(?:[.,]\d{3})+|\d+)(?:\s*(mil|k))?/i);
+  if (!match) return null;
+
+  const numeric = Number(match[1].replace(/[.,]/g, ""));
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  return match[2] ? numeric * 1000 : numeric;
+}
+
+function extractDescription(text: string) {
+  const match = text.match(/\b(?:en|por|de|para)\s+(.+)$/);
+  if (!match) return "";
+  return match[1].replace(/\b(?:cop|pesos)\b/g, "").trim();
+}
+
+function guessCategory(kind: "expense" | "income", text: string) {
+  if (kind === "income") {
+    if (/\b(salario|nomina|sueldo)\b/.test(text)) return "Salario";
+    if (/\b(honorario|freelance|cliente)\b/.test(text)) return "Honorarios";
+    if (/\b(venta|vendi|vendí)\b/.test(text)) return "Ventas";
+    if (/\b(reembolso|devolucion|devolución)\b/.test(text)) return "Reembolso";
+    return incomeCategories[incomeCategories.length - 1];
+  }
+
+  if (/\b(almuerzo|comida|desayuno|cena|mercado|restaurante|cafe|café)\b/.test(text)) return "Alimentacion";
+  if (/\b(taxi|uber|bus|metro|gasolina|peaje|transporte)\b/.test(text)) return "Transporte";
+  if (/\b(arriendo|renta|hipoteca|vivienda)\b/.test(text)) return "Vivienda";
+  if (/\b(luz|agua|internet|telefono|teléfono|gas|servicio)\b/.test(text)) return "Servicios";
+  if (/\b(medico|médico|medicina|salud|clinica|clínica)\b/.test(text)) return "Salud";
+  if (/\b(curso|libro|universidad|colegio|educacion|educación)\b/.test(text)) return "Educacion";
+  if (/\b(cine|netflix|spotify|bar|fiesta|entretenimiento)\b/.test(text)) return "Entretenimiento";
+  if (/\b(cuota|prestamo|préstamo|deuda|tarjeta)\b/.test(text)) return "Deudas";
+  if (/\b(ropa|zapatos|compra|compre|compré)\b/.test(text)) return "Compras";
+  return expenseCategories[expenseCategories.length - 1];
 }

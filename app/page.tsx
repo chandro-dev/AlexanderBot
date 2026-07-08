@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { transactionCategories } from "@/lib/domain/categories";
 import { summarizeTransactions, transactionKinds, type Transaction } from "@/lib/domain/transaction";
 
 type ApiPayload = {
@@ -187,7 +188,17 @@ export default function Home() {
                     <input value={item.currency} onChange={(event) => patchRow(item.id, { currency: event.target.value.toUpperCase() })} />
                   </td>
                   <td>
-                    <input value={item.category} onChange={(event) => patchRow(item.id, { category: event.target.value })} />
+                    <select value={item.category} onChange={(event) => patchRow(item.id, { category: event.target.value })}>
+                      <option value="">Seleccionar</option>
+                      {transactionCategories.map((category) => (
+                        <option key={category} value={category}>
+                          {category}
+                        </option>
+                      ))}
+                      {!transactionCategories.includes(item.category as (typeof transactionCategories)[number]) && item.category ? (
+                        <option value={item.category}>{item.category}</option>
+                      ) : null}
+                    </select>
                   </td>
                   <td>
                     <input value={item.description} onChange={(event) => patchRow(item.id, { description: event.target.value })} />
