@@ -1,0 +1,34 @@
+{
+  "name": "appfinanzas",
+  "version": "1.0.0",
+  "description": "Registro de gastos e ingresos desde Telegram hacia un archivo Excel auditable.",
+  "private": true,
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "@google/genai": "^2.10.0",
+    "@vercel/blob": "^2.6.1",
+    "exceljs": "^4.4.0",
+    "next": "^16.2.10",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "zod": "^4.4.3"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "@types/react": "19.2.17",
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "postcss": "8.5.10",
+    "uuid": "11.1.1"
+  }
+}
