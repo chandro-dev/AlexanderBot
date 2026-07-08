@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createPendingOperation } from "@/lib/domain/pending";
 import { summarizeTransactions, type Transaction } from "@/lib/domain/transaction";
-import { appendTransaction, readTransactions } from "@/lib/storage/excel-store";
+import { appendTransactions, readTransactions } from "@/lib/storage/excel-store";
 import { consumePending, setPending } from "@/lib/storage/pending-store";
 import { understandMessageFromAudio, understandMessageFromText } from "@/lib/ai/extractor";
 import { assertTelegramSecret, downloadTelegramFile, sendTelegramMessage } from "@/lib/telegram/client";
@@ -46,10 +46,12 @@ export async function POST(request: Request) {
         return NextResponse.json({ ok: true });
       }
 
-      const transaction = await appendTransaction(pending.transaction);
+      const transactions = await appendTransactions(pending.transactions);
       await sendTelegramMessage(
         chatId,
-        `Registrado en Excel: ${transaction.kind} ${transaction.amount} ${transaction.currency} - ${transaction.category}.`,
+        transactions.length === 1
+          ? `Registrado en Excel: ${transactions[0].kind} ${transactions[0].amount} ${transactions[0].currency} - ${transactions[0].category}.`
+          : `Registrados ${transactions.length} movimientos en Excel.`,
       );
       return NextResponse.json({ ok: true });
     }
@@ -104,16 +106,22 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true });
     }
 
-    if (!understanding.clear || !understanding.transaction) {
+    const transactionsToConfirm = understanding.transactions?.length
+      ? understanding.transactions
+      : understanding.transaction
+        ? [understanding.transaction]
+        : [];
+
+    if (!understanding.clear || transactionsToConfirm.length === 0) {
       await sendTelegramMessage(chatId, unclearMessage(understanding.reason));
       return NextResponse.json({ ok: true });
     }
 
     const pending = createPendingOperation(
       String(chatId),
-      understanding.transaction,
-      understanding.summary,
-      message.text || understanding.transaction.transcript || "",
+      transactionsToConfirm,
+      formatPendingSummary(understanding.summary, transactionsToConfirm),
+      message.text || transactionsToConfirm.map((item) => item.transcript).join(" | "),
     );
     await setPending(pending);
 
@@ -196,4 +204,21 @@ function formatRecent(transactions: Transaction[], limit: number) {
   });
 
   return [`Ultimos ${rows.length} movimientos:`, ...rows].join("\n");
+}
+
+function formatPendingSummary(summary: string, transactions: Array<{
+  kind: Transaction["kind"];
+  amount: number;
+  currency: string;
+  category: string;
+  description: string;
+}>) {
+  if (transactions.length === 1) return summary;
+
+  const rows = transactions.slice(0, 10).map((item, index) => {
+    const label = item.kind === "expense" ? "Gasto" : item.kind === "income" ? "Ingreso" : item.kind;
+    return `${index + 1}. ${label} ${formatMoney(item.amount, item.currency)} ${item.category} - ${item.description}`;
+  });
+
+  return [summary || `Encontre ${transactions.length} movimientos para confirmar:`, ...rows].join("\n");
 }

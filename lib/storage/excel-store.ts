@@ -82,6 +82,13 @@ export async function appendTransaction(input: TransactionInput) {
   return transaction;
 }
 
+export async function appendTransactions(inputs: TransactionInput[]) {
+  const transactions = await readTransactions();
+  const newTransactions = inputs.map((input) => createTransaction(input));
+  await replaceTransactions([...newTransactions, ...transactions]);
+  return newTransactions;
+}
+
 export async function upsertTransactions(inputs: Transaction[]) {
   const normalized = inputs.map((input) => {
     const existing = input.id ? input : createTransaction(input);

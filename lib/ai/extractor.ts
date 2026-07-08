@@ -11,6 +11,7 @@ const botUnderstandingSchema = z.object({
   summary: z.string().default(""),
   limit: z.coerce.number().int().min(1).max(20).default(5),
   transaction: transactionInputSchema.optional(),
+  transactions: z.array(transactionInputSchema).optional(),
 });
 
 export type BotUnderstanding = z.infer<typeof botUnderstandingSchema>;
@@ -55,14 +56,46 @@ function getClient() {
 
 function extractJson(text: string) {
   const trimmed = text.trim();
-  if (trimmed.startsWith("{") && trimmed.endsWith("}")) return trimmed;
-  const match = trimmed.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error("Model did not return JSON");
-  return match[0];
+  const start = trimmed.indexOf("{");
+  if (start === -1) throw new Error("Model did not return JSON");
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = start; index < trimmed.length; index += 1) {
+    const char = trimmed[index];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (char === "\\") {
+      escaped = inString;
+      continue;
+    }
+
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) continue;
+
+    if (char === "{") depth += 1;
+    if (char === "}") depth -= 1;
+
+    if (depth === 0) {
+      return trimmed.slice(start, index + 1);
+    }
+  }
+
+  throw new Error("Model returned incomplete JSON");
 }
 
 export async function understandMessageFromText(message: string): Promise<BotUnderstanding> {
-  const ruleBased = understandTransactionWithRules(message);
+  const ruleBased = understandTransactionsWithRules(message);
   if (ruleBased) return ruleBased;
   return understandMessage([{ text: message }], message);
 }
@@ -112,10 +145,12 @@ Devuelve exclusivamente JSON valido con esta forma:
     "source": "telegram",
     "transcript": "transcripcion o texto original",
     "confidence": number
-  }
+  },
+  "transactions": []
 }
 
 Reglas:
+- Devuelve un solo objeto JSON. No uses Markdown. No agregues texto antes ni despues.
 - Hoy es ${today}.
 - Primero identifica la intencion del usuario.
 - Usa intent="greeting" para saludos como hola, buenas, hey.
@@ -123,6 +158,7 @@ Reglas:
 - Usa intent="summary" si pide saldo, balance, total, resumen, ingresos o gastos.
 - Usa intent="recent" si pide ultimos movimientos, historial o listado. Ajusta limit si pide una cantidad.
 - Usa intent="add_transaction" solo si quiere registrar un gasto, ingreso, transferencia o ajuste.
+- Si el usuario menciona varios movimientos, llena "transactions" con todos. Tambien puedes llenar "transaction" con el primero.
 - Usa intent="unknown" si no entiendes la intencion.
 - Para greeting, help, summary y recent no incluyas transaction; clear puede ser true.
 - Para add_transaction, si falta monto, tipo de movimiento o descripcion util, usa clear=false.
@@ -133,12 +169,18 @@ Reglas:
 - Usa preferiblemente una de estas categorias:
 ${categories}
 - No inventes datos criticos; pide aclaracion con reason.
+- transaction.transcript debe ser corto, maximo 300 caracteres.
+- Cada item de transactions debe tener el mismo formato que transaction.
+- Extrae maximo 10 movimientos por mensaje o audio. Si hay mas, devuelve los 10 mas claros y explica en summary.
+- description debe ser corta, maximo 120 caracteres.
+- summary debe ser corta, maximo 180 caracteres.
 - confidence debe estar entre 0 y 1.
 - Escribe respuestas en espanol natural y corto.
 - Ejemplo saludo: {"intent":"greeting","clear":true,"reply":"Hola. Puedo registrar gastos e ingresos por texto o audio. Tambien puedo mostrar resumen y ultimos movimientos.","summary":"","limit":5}
 - Ejemplo ayuda: {"intent":"help","clear":true,"reply":"Puedes decir: gaste 25000 en almuerzo, recibi 100000 de salario, resumen, ultimos 5 movimientos.","summary":"","limit":5}
 - Ejemplo gasto: {"intent":"add_transaction","clear":true,"reply":"","summary":"Voy a registrar un gasto de 25000 ${currency} en Alimentacion por almuerzo.","limit":5,"transaction":{"date":"${today}","kind":"expense","amount":25000,"currency":"${currency}","category":"Alimentacion","description":"almuerzo","source":"telegram","transcript":"gaste 25000 en almuerzo","confidence":0.92}}
 - Ejemplo ingreso: {"intent":"add_transaction","clear":true,"reply":"","summary":"Voy a registrar un ingreso de 100000 ${currency} en Salario.","limit":5,"transaction":{"date":"${today}","kind":"income","amount":100000,"currency":"${currency}","category":"Salario","description":"salario","source":"telegram","transcript":"recibi 100000 de salario","confidence":0.92}}
+- Ejemplo varios: {"intent":"add_transaction","clear":true,"reply":"","summary":"Encontre 3 movimientos para confirmar.","limit":5,"transactions":[{"date":"${today}","kind":"expense","amount":25000,"currency":"${currency}","category":"Alimentacion","description":"almuerzo","source":"telegram","transcript":"gaste 25000 en almuerzo","confidence":0.9},{"date":"${today}","kind":"expense","amount":12000,"currency":"${currency}","category":"Transporte","description":"taxi","source":"telegram","transcript":"12000 en taxi","confidence":0.88},{"date":"${today}","kind":"income","amount":300000,"currency":"${currency}","category":"Honorarios","description":"cliente","source":"telegram","transcript":"recibi 300000 de un cliente","confidence":0.88}]}
 ${rawMessage ? `Texto recibido: ${rawMessage}` : "Interpreta el audio adjunto."}`,
         },
         ...parts,
@@ -146,21 +188,38 @@ ${rawMessage ? `Texto recibido: ${rawMessage}` : "Interpreta el audio adjunto."}
     },
   ];
 
-  const response = await ai.models.generateContent({
-    model,
-    contents: contents as never,
-    config: {
-      temperature: 0.1,
-      responseMimeType: "application/json",
-    },
-  });
+  let parsed: BotUnderstanding;
+  try {
+    const response = await ai.models.generateContent({
+      model,
+      contents: contents as never,
+      config: {
+        temperature: 0.1,
+        responseMimeType: "application/json",
+        maxOutputTokens: 1400,
+      },
+    });
 
-  const parsed = botUnderstandingSchema.parse(JSON.parse(extractJson(response.text ?? "")));
+    parsed = botUnderstandingSchema.parse(JSON.parse(extractJson(response.text ?? "")));
+  } catch (error) {
+    console.error("Model understanding failed", error);
+    return {
+      intent: "unknown",
+      clear: false,
+      reason: "El audio o mensaje fue demasiado largo o no pude estructurarlo.",
+      reply: "No pude entenderlo bien. Enviame una frase mas corta, por ejemplo: gaste 25000 en almuerzo.",
+      summary: "",
+      limit: 5,
+    };
+  }
+
   if (parsed.intent !== "add_transaction") {
     return parsed;
   }
 
-  if (!parsed.clear || !parsed.transaction) {
+  const transactions = normalizeTransactions(parsed, currency, rawMessage);
+
+  if (!parsed.clear || transactions.length === 0) {
     return {
       intent: "add_transaction",
       clear: false,
@@ -173,12 +232,8 @@ ${rawMessage ? `Texto recibido: ${rawMessage}` : "Interpreta el audio adjunto."}
 
   return botUnderstandingSchema.parse({
     ...parsed,
-    transaction: {
-      ...parsed.transaction,
-      currency: parsed.transaction.currency || currency,
-      source: "telegram",
-      transcript: parsed.transaction.transcript || rawMessage,
-    } satisfies TransactionInput,
+    transaction: transactions[0],
+    transactions,
   });
 }
 
@@ -190,13 +245,45 @@ function normalizeText(value: string) {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
-function understandTransactionWithRules(message: string): BotUnderstanding | null {
-  const normalized = normalizeText(message);
-  const kind = isIncomeText(normalized) ? "income" : isExpenseText(normalized) ? "expense" : null;
-  if (!kind) return null;
+function understandTransactionsWithRules(message: string): BotUnderstanding | null {
+  const parts = splitPotentialTransactions(message);
+  const transactions = parts
+    .map((part) => understandSingleTransactionWithRules(part))
+    .filter((item): item is TransactionInput => Boolean(item))
+    .slice(0, 10);
 
-  const amount = extractAmount(normalized);
-  if (!amount) {
+  if (transactions.length > 1) {
+    return botUnderstandingSchema.parse({
+      intent: "add_transaction",
+      clear: true,
+      reason: "",
+      reply: "",
+      summary: `Encontre ${transactions.length} movimientos para confirmar.`,
+      limit: 5,
+      transaction: transactions[0],
+      transactions,
+    });
+  }
+
+  if (transactions.length === 1) {
+    const item = transactions[0];
+    return botUnderstandingSchema.parse({
+      intent: "add_transaction",
+      clear: true,
+      reason: "",
+      reply: "",
+      summary:
+        item.kind === "expense"
+          ? `Voy a registrar un gasto de ${item.amount} ${item.currency} en ${item.category} por ${item.description}.`
+          : `Voy a registrar un ingreso de ${item.amount} ${item.currency} en ${item.category} por ${item.description}.`,
+      limit: 5,
+      transaction: item,
+      transactions: [item],
+    });
+  }
+
+  const normalized = normalizeText(message);
+  if ((isIncomeText(normalized) || isExpenseText(normalized)) && !extractAmount(normalized)) {
     return {
       intent: "add_transaction",
       clear: false,
@@ -207,33 +294,52 @@ function understandTransactionWithRules(message: string): BotUnderstanding | nul
     };
   }
 
+  return null;
+}
+
+function understandSingleTransactionWithRules(message: string): TransactionInput | null {
+  const normalized = normalizeText(message);
+  const kind = isIncomeText(normalized) ? "income" : isExpenseText(normalized) ? "expense" : null;
+  if (!kind) return null;
+
+  const amount = extractAmount(normalized);
+  if (!amount) return null;
+
   const currency = process.env.DEFAULT_CURRENCY || "COP";
   const description = extractDescription(normalized) || (kind === "expense" ? "gasto" : "ingreso");
   const category = guessCategory(kind, normalized);
   const date = new Date().toISOString().slice(0, 10);
 
-  return botUnderstandingSchema.parse({
-    intent: "add_transaction",
-    clear: true,
-    reason: "",
-    reply: "",
-    summary:
-      kind === "expense"
-        ? `Voy a registrar un gasto de ${amount} ${currency} en ${category} por ${description}.`
-        : `Voy a registrar un ingreso de ${amount} ${currency} en ${category} por ${description}.`,
-    limit: 5,
-    transaction: {
-      date,
-      kind,
-      amount,
-      currency,
-      category,
-      description,
-      source: "telegram",
-      transcript: message,
-      confidence: 0.9,
-    },
+  return transactionInputSchema.parse({
+    date,
+    kind,
+    amount,
+    currency,
+    category,
+    description,
+    source: "telegram",
+    transcript: message.trim().slice(0, 300),
+    confidence: 0.9,
   });
+}
+
+function splitPotentialTransactions(message: string) {
+  const normalized = message.replace(/\s+/g, " ").trim();
+  const coarseParts = normalized.split(/\s*(?:,|;|\.|\n|\s+y\s+|\s+ademas\s+|\s+tambien\s+)\s*/i);
+  const parts = coarseParts.filter((part) => part.trim().length > 0);
+  return parts.length ? parts : [message];
+}
+
+function normalizeTransactions(parsed: BotUnderstanding, currency: string, rawMessage: string): TransactionInput[] {
+  const candidates = parsed.transactions?.length ? parsed.transactions : parsed.transaction ? [parsed.transaction] : [];
+  return candidates.slice(0, 10).map((transaction) =>
+    transactionInputSchema.parse({
+      ...transaction,
+      currency: transaction.currency || currency,
+      source: "telegram",
+      transcript: (transaction.transcript || rawMessage).slice(0, 300),
+    }),
+  );
 }
 
 function includesAny(text: string, words: string[]) {
