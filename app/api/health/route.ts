@@ -1,0 +1,17 @@
+import { NextResponse } from "next/server";
+
+export const runtime = "nodejs";
+
+export async function GET() {
+  return NextResponse.json({
+    ok: true,
+    env: {
+      telegramBotToken: Boolean(process.env.TELEGRAM_BOT_TOKEN),
+      telegramWebhookSecret: Boolean(process.env.TELEGRAM_WEBHOOK_SECRET),
+      geminiApiKey: Boolean(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY),
+      geminiModel: process.env.GEMINI_MODEL || "gemini-2.5-flash",
+      blobReadWriteToken: Boolean(process.env.BLOB_READ_WRITE_TOKEN),
+      defaultCurrency: process.env.DEFAULT_CURRENCY || "COP",
+    },
+  });
+}
