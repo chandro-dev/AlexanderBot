@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { createPendingOperation } from "@/lib/domain/pending";
-import { appendTransaction } from "@/lib/storage/excel-store";
+import { summarizeTransactions, type Transaction } from "@/lib/domain/transaction";
+import { appendTransaction, readTransactions } from "@/lib/storage/excel-store";
 import { consumePending, setPending } from "@/lib/storage/pending-store";
-import { extractTransactionFromAudio, extractTransactionFromText } from "@/lib/ai/extractor";
+import { understandMessageFromAudio, understandMessageFromText } from "@/lib/ai/extractor";
 import { assertTelegramSecret, downloadTelegramFile, sendTelegramMessage } from "@/lib/telegram/client";
 
 export const runtime = "nodejs";
@@ -16,11 +17,15 @@ type TelegramUpdate = {
   };
 };
 
-const confirmationWords = new Set(["si", "sí", "confirmar", "confirmo", "ok", "dale", "guardar"]);
+const confirmationWords = new Set(["si", "confirmar", "confirmo", "ok", "dale", "guardar"]);
 const cancelWords = new Set(["no", "cancelar", "cancela"]);
 
 function normalize(value: string) {
-  return value.trim().toLowerCase();
+  return value
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
 }
 
 export async function POST(request: Request) {
@@ -55,31 +60,60 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true });
     }
 
-    const fileId = message.voice?.file_id || message.audio?.file_id;
-    const extraction = fileId
-      ? await extractFromTelegramAudio(fileId, message.voice?.mime_type || message.audio?.mime_type)
-      : message.text
-        ? await extractTransactionFromText(message.text)
-        : null;
-
-    if (!extraction) {
-      await sendTelegramMessage(chatId, "Enviame una nota de voz o un texto con el movimiento.");
+    if (text === "/start" || text === "/help" || text === "ayuda") {
+      await sendTelegramMessage(chatId, helpMessage());
       return NextResponse.json({ ok: true });
     }
 
-    if (!extraction.clear || !extraction.transaction) {
-      await sendTelegramMessage(
-        chatId,
-        `No fue claro: ${extraction.reason}. Envia algo como "gaste 25000 en almuerzo" o "recibi 100000 de salario".`,
-      );
+    const fileId = message.voice?.file_id || message.audio?.file_id;
+    const understanding = fileId
+      ? await understandTelegramAudio(fileId, message.voice?.mime_type || message.audio?.mime_type)
+      : message.text
+        ? await understandMessageFromText(message.text)
+        : null;
+
+    if (!understanding) {
+      await sendTelegramMessage(chatId, "Enviame una nota de voz o un texto. Escribe ayuda para ver ejemplos.");
+      return NextResponse.json({ ok: true });
+    }
+
+    if (understanding.intent === "greeting") {
+      await sendTelegramMessage(chatId, understanding.reply || welcomeMessage());
+      return NextResponse.json({ ok: true });
+    }
+
+    if (understanding.intent === "help") {
+      await sendTelegramMessage(chatId, helpMessage());
+      return NextResponse.json({ ok: true });
+    }
+
+    if (understanding.intent === "summary") {
+      const transactions = await readTransactions();
+      await sendTelegramMessage(chatId, formatSummary(transactions));
+      return NextResponse.json({ ok: true });
+    }
+
+    if (understanding.intent === "recent") {
+      const transactions = await readTransactions();
+      await sendTelegramMessage(chatId, formatRecent(transactions, understanding.limit));
+      return NextResponse.json({ ok: true });
+    }
+
+    if (understanding.intent !== "add_transaction") {
+      await sendTelegramMessage(chatId, understanding.reply || unclearMessage(understanding.reason));
+      return NextResponse.json({ ok: true });
+    }
+
+    if (!understanding.clear || !understanding.transaction) {
+      await sendTelegramMessage(chatId, unclearMessage(understanding.reason));
       return NextResponse.json({ ok: true });
     }
 
     const pending = createPendingOperation(
       String(chatId),
-      extraction.transaction,
-      extraction.summary,
-      message.text || "",
+      understanding.transaction,
+      understanding.summary,
+      message.text || understanding.transaction.transcript || "",
     );
     await setPending(pending);
 
@@ -95,7 +129,71 @@ export async function POST(request: Request) {
   }
 }
 
-async function extractFromTelegramAudio(fileId: string, mimeType?: string) {
+async function understandTelegramAudio(fileId: string, mimeType?: string) {
   const audio = await downloadTelegramFile(fileId);
-  return extractTransactionFromAudio(audio.buffer, mimeType || audio.contentType || "audio/ogg");
+  return understandMessageFromAudio(audio.buffer, mimeType || audio.contentType || "audio/ogg");
+}
+
+function welcomeMessage() {
+  return [
+    "Hola. Puedo registrar gastos e ingresos por texto o audio.",
+    "Tambien puedo mostrar resumen y ultimos movimientos.",
+    "",
+    'Ejemplos: "gaste 25000 en almuerzo", "recibi 100000 de salario", "resumen", "ultimos 5".',
+  ].join("\n");
+}
+
+function helpMessage() {
+  return [
+    "Puedes usarme asi:",
+    "- Registrar gasto: gaste 25000 en almuerzo",
+    "- Registrar ingreso: recibi 100000 de salario",
+    "- Ver resumen: resumen o balance",
+    "- Ver historial: ultimos 5 movimientos",
+    "- Confirmar: si",
+    "- Cancelar: no",
+    "",
+    "Tambien puedes enviarme una nota de voz con esas mismas ideas.",
+  ].join("\n");
+}
+
+function unclearMessage(reason?: string) {
+  const detail = reason ? `: ${reason}` : "";
+  return `No fue claro${detail}. Puedes decir "ayuda", "resumen" o algo como "gaste 25000 en almuerzo".`;
+}
+
+function formatMoney(amount: number, currency = "COP") {
+  return new Intl.NumberFormat("es-CO", {
+    style: "currency",
+    currency,
+    maximumFractionDigits: 0,
+  }).format(amount);
+}
+
+function formatSummary(transactions: Transaction[]) {
+  if (!transactions.length) {
+    return "Aun no hay movimientos registrados.";
+  }
+
+  const summary = summarizeTransactions(transactions);
+  return [
+    "Resumen actual:",
+    `Ingresos: ${formatMoney(summary.income)}`,
+    `Gastos: ${formatMoney(summary.expenses)}`,
+    `Balance: ${formatMoney(summary.balance)}`,
+    `Movimientos: ${summary.count}`,
+  ].join("\n");
+}
+
+function formatRecent(transactions: Transaction[], limit: number) {
+  if (!transactions.length) {
+    return "Aun no hay movimientos registrados.";
+  }
+
+  const rows = transactions.slice(0, limit).map((item) => {
+    const sign = item.kind === "expense" ? "-" : item.kind === "income" ? "+" : "";
+    return `${item.date} ${sign}${formatMoney(item.amount, item.currency)} ${item.category} - ${item.description}`;
+  });
+
+  return [`Ultimos ${rows.length} movimientos:`, ...rows].join("\n");
 }
