@@ -12,6 +12,11 @@ export async function GET() {
       geminiModel: process.env.GEMINI_MODEL || "gemini-2.5-flash",
       blobReadWriteToken: Boolean(process.env.BLOB_READ_WRITE_TOKEN),
       defaultCurrency: process.env.DEFAULT_CURRENCY || "COP",
+      storageMode: process.env.BLOB_READ_WRITE_TOKEN
+        ? "vercel-blob"
+        : process.env.VERCEL
+          ? "serverless-tmp"
+          : "local-filesystem",
     },
   });
 }

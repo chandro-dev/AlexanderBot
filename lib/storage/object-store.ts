@@ -1,11 +1,24 @@
 import { put, head, BlobNotFoundError } from "@vercel/blob";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
-
-const dataDir = path.join(process.cwd(), "data");
 
 function useBlobStore() {
   return Boolean(process.env.BLOB_READ_WRITE_TOKEN);
+}
+
+function dataDir() {
+  if (process.env.VERCEL) {
+    return path.join(os.tmpdir(), "appfinanzas");
+  }
+
+  return path.join(/*turbopackIgnore: true*/ process.cwd(), "data");
+}
+
+export function storageMode() {
+  if (useBlobStore()) return "vercel-blob";
+  if (process.env.VERCEL) return "serverless-tmp";
+  return "local-filesystem";
 }
 
 export async function readObject(pathname: string): Promise<Buffer | null> {
@@ -22,7 +35,7 @@ export async function readObject(pathname: string): Promise<Buffer | null> {
   }
 
   try {
-    return await readFile(path.join(dataDir, pathname));
+    return await readFile(path.join(dataDir(), pathname));
   } catch {
     return null;
   }
@@ -39,6 +52,6 @@ export async function writeObject(pathname: string, body: Buffer | string, conte
     return;
   }
 
-  await mkdir(dataDir, { recursive: true });
-  await writeFile(path.join(dataDir, pathname), body);
+  await mkdir(dataDir(), { recursive: true });
+  await writeFile(path.join(dataDir(), pathname), body);
 }
