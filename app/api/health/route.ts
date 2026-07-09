@@ -11,6 +11,10 @@ export async function GET() {
       geminiApiKey: Boolean(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY),
       geminiModel: process.env.GEMINI_MODEL || "gemini-2.5-flash",
       geminiModels: process.env.GEMINI_MODELS || process.env.GEMINI_MODEL || "gemini-2.5-flash-lite,gemini-2.5-flash",
+      geminiAudioTranscriptionModels:
+        process.env.GEMINI_AUDIO_TRANSCRIPTION_MODELS ||
+        process.env.GEMINI_AUDIO_MODEL ||
+        "gemini-2.5-flash,gemini-2.5-flash-lite",
       groqApiKey: Boolean(process.env.GROQ_API_KEY),
       groqTranscriptionModel: process.env.GROQ_TRANSCRIPTION_MODEL || "whisper-large-v3-turbo",
       blobReadWriteToken: Boolean(process.env.BLOB_READ_WRITE_TOKEN),

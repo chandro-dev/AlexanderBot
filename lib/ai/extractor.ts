@@ -102,28 +102,113 @@ export async function understandMessageFromText(message: string): Promise<BotUnd
 }
 
 export async function understandMessageFromAudio(audio: Buffer, mimeType: string): Promise<BotUnderstanding> {
+  const ai = getClient();
+
   if (canUseGroqTranscription()) {
     try {
       const transcript = await transcribeAudioWithGroq(audio, mimeType);
-      const ruleBased = understandTransactionsWithRules(transcript);
-      if (ruleBased) return ruleBased;
-      return understandMessage([{ text: transcript }], transcript);
+      return understandTranscript(transcript);
     } catch (error) {
-      console.error("Groq transcription failed, falling back to Gemini audio", error);
+      console.error("Groq transcription failed, falling back to Gemini transcription", error);
     }
   }
 
-  return understandMessage(
-    [
-      {
-        inlineData: {
-          mimeType,
-          data: audio.toString("base64"),
+  try {
+    const transcript = await transcribeAudioWithGemini(ai, audio, mimeType);
+    return understandTranscript(transcript);
+  } catch (error) {
+    console.error("Gemini transcription failed, falling back to direct audio understanding", error);
+    return understandMessage(
+      [
+        {
+          inlineData: {
+            mimeType,
+            data: audio.toString("base64"),
+          },
         },
-      },
-    ],
-    "",
-  );
+      ],
+      "",
+    );
+  }
+}
+
+async function understandTranscript(transcript: string) {
+  const cleanedTranscript = transcript.trim();
+  if (!cleanedTranscript) {
+    return {
+      intent: "unknown",
+      clear: false,
+      reason: "No pude transcribir el audio.",
+      reply: "No pude escuchar bien el audio. Intenta hablar mas cerca del microfono o enviar texto.",
+      summary: "",
+      limit: 5,
+    } satisfies BotUnderstanding;
+  }
+
+  const ruleBased = understandTransactionsWithRules(cleanedTranscript);
+  if (ruleBased) return ruleBased;
+  return understandMessage([{ text: cleanedTranscript }], cleanedTranscript);
+}
+
+async function transcribeAudioWithGemini(ai: GoogleGenAI, audio: Buffer, mimeType: string) {
+  const models = audioTranscriptionModels();
+  const contents = [
+    {
+      role: "user",
+      parts: [
+        {
+          text: [
+            "Transcribe este audio en espanol de forma literal y compacta.",
+            "Devuelve solo texto plano, sin JSON, sin Markdown y sin explicaciones.",
+            "Conserva montos, fechas, comercios, categorias y conectores como 'y', 'ademas', 'tambien'.",
+          ].join(" "),
+        },
+        {
+          inlineData: {
+            mimeType,
+            data: audio.toString("base64"),
+          },
+        },
+      ],
+    },
+  ];
+
+  let lastError: unknown = null;
+
+  for (const model of models) {
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents: contents as never,
+        config: {
+          temperature: 0,
+          maxOutputTokens: Number(process.env.AUDIO_TRANSCRIPTION_MAX_OUTPUT_TOKENS || 3000),
+        },
+      });
+
+      const text = response.text?.trim();
+      if (text) return text;
+    } catch (error) {
+      lastError = error;
+      console.error(`Gemini transcription model failed: ${model}`, error);
+    }
+  }
+
+  throw lastError || new Error("All Gemini transcription models failed");
+}
+
+function audioTranscriptionModels() {
+  const configured =
+    process.env.GEMINI_AUDIO_TRANSCRIPTION_MODELS ||
+    process.env.GEMINI_AUDIO_MODEL ||
+    "gemini-2.5-flash,gemini-2.5-flash-lite";
+
+  const models = configured
+    .split(",")
+    .map((model) => model.trim())
+    .filter(Boolean);
+
+  return models.length ? models : ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
 }
 
 async function understandMessage(parts: unknown[], rawMessage: string): Promise<BotUnderstanding> {
