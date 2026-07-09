@@ -14,13 +14,12 @@ En local se guarda en `./data`. En Vercel se usa Vercel Blob si existe `BLOB_REA
 
 ## Modelo recomendado
 
-Para empezar recomiendo `gemini-2.5-flash` mediante Gemini Developer API:
+Para empezar recomiendo este enrutamiento:
 
-- Tiene tier gratuito para prototipos.
-- Puede recibir audio y texto en la misma llamada.
-- Permite salida JSON, lo que facilita auditoria y validacion.
+- Texto y clasificacion: `gemini-2.5-flash-lite`, con fallback a `gemini-2.5-flash`.
+- Audio largo: Groq `whisper-large-v3-turbo` para transcripcion, luego Gemini solo procesa texto.
 
-Alternativa si el audio crece: Groq Whisper para transcripcion y Gemini Flash para clasificacion. Es mas barato/rapido para transcribir, pero agrega una segunda integracion.
+Esto baja el consumo de audio en Gemini y reparte limites entre proveedores. Si no configuras `GROQ_API_KEY`, la app mantiene el fallback de audio directo con Gemini.
 
 ## Configuracion local
 
@@ -35,6 +34,9 @@ Completa en `.env.local`:
 - `TELEGRAM_BOT_TOKEN`: token de BotFather.
 - `TELEGRAM_WEBHOOK_SECRET`: secreto propio para validar que Telegram llama el webhook.
 - `GEMINI_API_KEY`: API key de Google AI Studio.
+- `GEMINI_MODELS`: modelos de Gemini en orden de intento, por ejemplo `gemini-2.5-flash-lite,gemini-2.5-flash`.
+- `GROQ_API_KEY`: opcional, recomendado para transcribir audios largos.
+- `GROQ_TRANSCRIPTION_MODEL`: por defecto `whisper-large-v3-turbo`.
 - `DEFAULT_CURRENCY`: por defecto `COP`.
 
 ## Configurar webhook de Telegram

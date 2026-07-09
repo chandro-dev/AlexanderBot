@@ -1,4 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
+import { canUseGroqTranscription, transcribeAudioWithGroq } from "@/lib/ai/groq";
 import { z } from "zod";
 import { categoriesForPrompt, expenseCategories, incomeCategories } from "@/lib/domain/categories";
 import { transactionInputSchema, type TransactionInput } from "@/lib/domain/transaction";
@@ -101,6 +102,17 @@ export async function understandMessageFromText(message: string): Promise<BotUnd
 }
 
 export async function understandMessageFromAudio(audio: Buffer, mimeType: string): Promise<BotUnderstanding> {
+  if (canUseGroqTranscription()) {
+    try {
+      const transcript = await transcribeAudioWithGroq(audio, mimeType);
+      const ruleBased = understandTransactionsWithRules(transcript);
+      if (ruleBased) return ruleBased;
+      return understandMessage([{ text: transcript }], transcript);
+    } catch (error) {
+      console.error("Groq transcription failed, falling back to Gemini audio", error);
+    }
+  }
+
   return understandMessage(
     [
       {
@@ -118,7 +130,7 @@ async function understandMessage(parts: unknown[], rawMessage: string): Promise<
   const ai = getClient();
   const today = new Date().toISOString().slice(0, 10);
   const currency = process.env.DEFAULT_CURRENCY || "COP";
-  const model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+  const models = geminiModels();
   const categories = categoriesForPrompt();
 
   const contents = [
@@ -190,17 +202,8 @@ ${rawMessage ? `Texto recibido: ${rawMessage}` : "Interpreta el audio adjunto."}
 
   let parsed: BotUnderstanding;
   try {
-    const response = await ai.models.generateContent({
-      model,
-      contents: contents as never,
-      config: {
-        temperature: 0.1,
-        responseMimeType: "application/json",
-        maxOutputTokens: 1400,
-      },
-    });
-
-    parsed = botUnderstandingSchema.parse(JSON.parse(extractJson(response.text ?? "")));
+    const responseText = await generateWithGeminiFallback(ai, models, contents);
+    parsed = botUnderstandingSchema.parse(JSON.parse(extractJson(responseText)));
   } catch (error) {
     console.error("Model understanding failed", error);
     return {
@@ -235,6 +238,41 @@ ${rawMessage ? `Texto recibido: ${rawMessage}` : "Interpreta el audio adjunto."}
     transaction: transactions[0],
     transactions,
   });
+}
+
+async function generateWithGeminiFallback(ai: GoogleGenAI, models: string[], contents: unknown[]) {
+  let lastError: unknown = null;
+
+  for (const model of models) {
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents: contents as never,
+        config: {
+          temperature: 0.1,
+          responseMimeType: "application/json",
+          maxOutputTokens: Number(process.env.GEMINI_MAX_OUTPUT_TOKENS || 2200),
+        },
+      });
+
+      return response.text ?? "";
+    } catch (error) {
+      lastError = error;
+      console.error(`Gemini model failed: ${model}`, error);
+    }
+  }
+
+  throw lastError || new Error("All Gemini models failed");
+}
+
+function geminiModels() {
+  const configured = process.env.GEMINI_MODELS || process.env.GEMINI_MODEL || "gemini-2.5-flash-lite,gemini-2.5-flash";
+  const models = configured
+    .split(",")
+    .map((model) => model.trim())
+    .filter(Boolean);
+
+  return models.length ? models : ["gemini-2.5-flash-lite", "gemini-2.5-flash"];
 }
 
 function normalizeText(value: string) {
