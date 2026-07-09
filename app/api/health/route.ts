@@ -8,6 +8,8 @@ export async function GET() {
     env: {
       telegramBotToken: Boolean(process.env.TELEGRAM_BOT_TOKEN),
       telegramWebhookSecret: Boolean(process.env.TELEGRAM_WEBHOOK_SECRET),
+      authPassword: Boolean(process.env.AUTH_PASSWORD),
+      jwtSecret: Boolean(process.env.JWT_SECRET),
       geminiApiKey: Boolean(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY),
       geminiModel: process.env.GEMINI_MODEL || "gemini-2.5-flash",
       geminiModels: process.env.GEMINI_MODELS || process.env.GEMINI_MODEL || "gemini-2.5-flash-lite,gemini-2.5-flash",

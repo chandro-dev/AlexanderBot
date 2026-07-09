@@ -100,6 +100,11 @@ export default function Home() {
     setTransactions((current) => current.filter((item) => item.id !== id));
   }
 
+  async function logout() {
+    await fetch("/api/auth/logout", { method: "POST" });
+    window.location.href = "/login";
+  }
+
   const lastUpdated = transactions[0]?.updatedAt
     ? new Intl.DateTimeFormat("es-CO", {
         dateStyle: "medium",
@@ -129,6 +134,9 @@ export default function Home() {
           <a className="button" href="/api/excel">
             Descargar Excel
           </a>
+          <button className="button" onClick={logout}>
+            Salir
+          </button>
         </div>
       </section>
 
