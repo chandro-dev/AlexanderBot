@@ -100,12 +100,24 @@ export default function Home() {
     setTransactions((current) => current.filter((item) => item.id !== id));
   }
 
+  const lastUpdated = transactions[0]?.updatedAt
+    ? new Intl.DateTimeFormat("es-CO", {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }).format(new Date(transactions[0].updatedAt))
+    : "Sin registros";
+
   return (
     <main className="shell">
-      <section className="topbar">
-        <div>
+      <section className="hero">
+        <div className="hero-copy">
+          <span className="eyebrow">Control financiero</span>
           <h1>Finanzas</h1>
-          <p className="subtitle">Movimientos del Excel usado por el bot de Telegram.</p>
+          <p className="subtitle">Audita, corrige y descarga los movimientos que llegan desde Telegram.</p>
+          <div className="hero-meta">
+            <span>Ultima actualizacion: {lastUpdated}</span>
+            <span>{summary.count} registros</span>
+          </div>
         </div>
         <div className="actions">
           <button className="button" onClick={() => setTransactions((rows) => [newRow(), ...rows])}>
@@ -121,19 +133,19 @@ export default function Home() {
       </section>
 
       <section className="summary" aria-label="Resumen">
-        <div className="metric">
+        <div className="metric income">
           <span>Ingresos</span>
           <strong>{moneyFormatter.format(summary.income)}</strong>
         </div>
-        <div className="metric">
+        <div className="metric expense">
           <span>Gastos</span>
           <strong>{moneyFormatter.format(summary.expenses)}</strong>
         </div>
-        <div className="metric">
+        <div className={`metric ${summary.balance >= 0 ? "income" : "expense"}`}>
           <span>Balance</span>
           <strong>{moneyFormatter.format(summary.balance)}</strong>
         </div>
-        <div className="metric">
+        <div className="metric neutral">
           <span>Registros</span>
           <strong>{summary.count}</strong>
         </div>
@@ -203,10 +215,14 @@ export default function Home() {
                   <td>
                     <input value={item.description} onChange={(event) => patchRow(item.id, { description: event.target.value })} />
                   </td>
-                  <td>{item.source}</td>
-                  <td>{Math.round(item.confidence * 100)}%</td>
                   <td>
-                    <button className="button" onClick={() => removeRow(item.id)}>
+                    <span className={`badge ${item.source}`}>{item.source}</span>
+                  </td>
+                  <td>
+                    <span className="confidence">{Math.round(item.confidence * 100)}%</span>
+                  </td>
+                  <td>
+                    <button className="button danger-button" onClick={() => removeRow(item.id)}>
                       Eliminar
                     </button>
                   </td>
